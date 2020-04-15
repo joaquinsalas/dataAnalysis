@@ -1,0 +1,350 @@
+---
+title: 'Seleccion de Caracteristicas: Algunos Estados'
+author: "joaquin salas"
+date: "2020.04.14"
+output:
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+En este documento construimos un clasificador para distinguir entre pacientes descartados y confirmados. 
+En el trayecto hacemos seleccion de caracteristicas. Al final evaluamos el desempeño del 
+clasificador construido mediante curvas de precision-recall y ROC.
+ 
+
+
+```{r  echo=FALSE}
+
+
+
+dir = 'E:/Documents/informs/research/2020.03.16 covid/code/'
+setwd(dir)
+
+
+#library("BESTree")
+
+suppressMessages(require(dummies))
+suppressMessages(library("installr"))
+
+suppressMessages(suppressWarnings(library(Boruta))) #for boruta, feature selection
+
+suppressMessages(suppressWarnings(library(randomForest))) #for randomForest
+suppressMessages(require(ggplot2))
+suppressMessages(library(tidyr)) #fill
+
+#import libraries
+suppressMessages(library(lubridate, warn.conflict = FALSE, quietly = TRUE))
+
+suppressMessages(library(caret))
+
+suppressMessages(require(plotly))
+ 
+
+suppressMessages(require(PRROC))
+suppressMessages(library(pROC,verbose = TRUE )) #pROC, ROC analysis
+
+suppressMessages(require(multiROC))
+suppressMessages(require(dplyr))
+suppressMessages(require(plyr))
+
+suppressMessages(library(data.table)) # setnames
+
+suppressMessages(require("Hmisc"))
+suppressMessages(require(nbpMatching))
+
+suppressMessages(library(missForest))
+suppressMessages(library(caTools))
+
+suppressMessages(library(readr))
+suppressMessages(library(matrixStats)) #colSds, standard deviation
+
+
+source("readDataDateSelect.R")
+
+
+
+
+```
+
+
+## Preprocesamiento
+
+Dado que utilizaremos Boruta para la seleccion de caracteristicas, reducimos la base de datos mediante la siguiente estrategia. 
+
+
+```{r preparacion, echo=FALSE}
+
+posfix = "all"
+
+dataset.cdmx.NE = readDataDateSelect(filename = "../data/2020.04.14data/CDMX NORESTEcenso_nominal_20200414 (7).csv", sep = ',', fileEncoding = "latin1")
+
+data <- read_csv("../data/2020.04.14data/CDMX NORESTEcenso_nominal_20200414 (7).csv")
+
+dataset.cdmx.NO = readDataDateSelectCSV(filename = "../data/2020.04.14data/CDMX NOROESTEcenso_nominal_20200414 (6).csv", sep = '\t', fileEncoding = "UTF-16")
+
+dataset.cdmx.O = readDataDateSelectCSV(filename = "../data/2020.04.14data/CDMX ORIENTE censo_nominal_20200414 (10).csv", sep = '\t', fileEncoding = "UTF-16")
+
+dataset.cdmx.P = readDataDateSelectCSV(filename = "../data/2020.04.14data/CDMX PONIENTEcenso_nominal_20200414 (11).csv", sep = ',')
+
+dataset.cdmx.SE = readDataDateSelectCSV(filename = "../data/2020.04.14data/CDMX SURESTEcenso_nominal_20200414 (9).csv", sep = '\t', fileEncoding = "UTF-16")
+
+
+dataset.cdmx.SO = readDataDateSelectCSV(filename = "../data/2020.04.14data/CDMX SUROESTEcenso_nominal_20200414 (8).csv", sep = '\t', fileEncoding = "UTF-16")
+
+
+dataset.dgo = readDataDateSelectCSV(filename = "../data/2020.04.14data/DURANGOcenso_nominal_20200414 (1).csv", sep = '\t', fileEncoding = "UTF-16")
+
+dataset.hgo = readDataDateSelectCSV(filename = "../data/2020.04.14data/HIDALGOcenso_nominal_20200414 (2).csv", sep = '\t', fileEncoding = "UTF-16")
+
+dataset.mor = readDataDateSelectCSV(filename = "../data/2020.04.14data/MORELOScenso_nominal_20200414 (3).csv", sep = '\t', fileEncoding = "UTF-16")
+
+dataset.qro = readDataDateSelectCSV(filename = "../data/2020.04.14data/QUERETAROcenso_nominal_20200414.csv", sep = ',')
+
+
+dataset.qro = readDataDateSelectCSV(filename = "../data/2020.04.14data/QUERETAROcenso_nominal_20200414.csv")
+
+
+dataset.ytn = readDataDateSelectCSV(filename = "../data/2020.04.14data/YUCATANcenso_nominal_20200414 (4).csv", sep = '\t', fileEncoding = "UTF-16")
+
+
+dataset.zac = readDataDateSelectCSV(filename = "../data/2020.04.14data/CDMX SUROESTEcenso_nominal_20200414 (8).csv", sep = '\t', fileEncoding = "UTF-16")
+
+
+#join = inner_join(dataset.dgo$X, dataset.hgo$X)
+
+X = rbind(dataset.dgo$X,dataset.hgo$X, dataset.mor$X, dataset.qro$X, dataset.ytn$X, dataset.zac$X)
+
+y = as.factor(c(dataset.dgo$y,dataset.hgo$y, dataset.mor$y, dataset.qro$y, dataset.ytn$y, dataset.zac$y))
+#y = data.frame(y)
+#names(y) = "caso"
+
+too.many.nan = names(X)[colSums(is.na(X)) > 1]
+
+  
+#remueve las varibles que por ahora no se tomaran en cuenta
+Xp = X[, !(names(X) %in% c(too.many.nan))]
+  
+
+#debug(missForest(Xp, verbose=TRUE))
+
+
+#number of categories
+#for (name in names(Xp)) {
+#  categories = unique(Xp[,name])
+#  print(length(categories))
+#}
+
+Xp.imp = suppressMessages(suppressWarnings(missForest(Xp, verbose=FALSE)))
+  
+   
+#dataset = cbind(as.factor(y), Xp.imp)
+ 
+  
+  #hay algunas variables con un nan, se hace imputacion de valores
+#Xp.imp <- suppressMessages(missForest(dataset))
+    
+  
+  #dim(Xpp)
+  
+dataset = list(X = Xp.imp$ximp, y = y) 
+
+dim(dataset$X)
+
+
+
+
+
+```
+
+
+## Seleccion de Caracteristicas
+
+Mediante la tecnica de Boruta, realizamos un analisis de las caracteristicas mas importantes en la determinacion del caso.
+
+
+
+```{r seleccion, echo=FALSE}
+
+n = 100
+cols = dim(dataset$X)[2]
+selected = data.frame(matrix(FALSE, nrow = n, ncol=cols))
+importance = data.frame(matrix(0, nrow = n, ncol=cols))
+
+
+setnames(selected,old = names(selected), new= names(dataset$X))
+for (i in c(1:n)) {
+  print(i)
+    features = selectFeatures(dataset, posfix)
+    selected[i,features$attributes] = TRUE
+    importance[i,features$attributes] = features$important$meanImp
+}
+
+num.times.selected = colSums(selected)
+important.attributes = names(selected)[num.times.selected>0]
+imp.means = colMeans(importance[,important.attributes], na.rm = TRUE)
+imp.sd = sapply(importance[,important.attributes], sd, na.rm=TRUE)
+
+save(num.times.selected, important.attributes, imp.means, imp.sd, selected, importance, file = "borutaSummary")
+
+
+#orden por numero de veces seleccionado por Boruta como importante
+times.decreasing = order(num.times.selected[names(imp.means)], decreasing = TRUE)
+names.decreasing = names(imp.means)[times.decreasing]
+print(num.times.selected[names.decreasing])
+
+
+# 1. Open jpeg file
+filename = paste("timesSelected02",posfix,".jpg")
+
+
+
+plot(num.times.selected[names.decreasing], imp.means[names.decreasing], xlab = "veces seleccionado", ylab = "importancia media", col = c(1:length(names.decreasing)), pch = 19, cex = 4)
+
+df = data.frame(veces = num.times.selected[names.decreasing], importancia = imp.means[names.decreasing], nombres = names.decreasing )
+write.csv(df, "veces.csv")
+#text(num.times.selected[names.decreasing] ~ imp.means[names.decreasing], labels=names.decreasing, cex= 0.7)
+
+
+
+dev.off()
+
+imp.features = selected[,important.attributes]
+
+#dd = dist(t(imp.features))
+#hc <- hclust(dd, method = "ward.D2")
+
+#library("ape")
+
+#plot(as.phylo(hc), "fan")
+
+
+#print(order.decreasing)
+
+#imp.decreasing = order(imp.means, decreasing = TRUE)
+#names.decreasing = names(imp.means)[imp.decreasing]
+#print(num.times.selected[names.decreasing])
+#boxplot(importance[,names.decreasing],col = imp.means, las=3)
+
+
+
+```
+## Clasificador de Random Forest
+
+Construimos un clasificador Random Forest con los predictores que resultaron importantes en el analisis de Boruta. 
+
+```{r include=FALSE}
+
+X = dataset$X
+y = as.factor(dataset$y)
+
+
+#matrix with unique rows
+unique.selected = unique.matrix(selected)
+
+#unique classifiers
+unique.rows = dim(unique.selected)[1]
+ 
+#unique.rows = 2
+
+set.seed(123)
+
+
+ndata = cbind(X,y)
+
+smp.size = floor(0.5 * nrow(ndata))
+
+cv.trial = 30
+ 
+
+roc.auc = matrix(0,unique.rows, cv.trial)
+pr.auc = matrix(0,unique.rows, cv.trial)
+
+for (num.classifier in c(1:unique.rows)) {
+  #num.classifier = 4
+  print(num.classifier)
+  
+  #classifier = 1
+  #nombres de columnas que fueron seleccionadas para el clasificador
+  attributes = colnames(unique.selected)[unique.selected[num.classifier,]>0]
+  
+
+  
+  for (trial in seq(1,cv.trial)) {
+    #trial = 1  
+    #print(trial)
+    
+    ## set the seed to make your partition reproducible
+    
+    train_ind <- sample(seq_len(nrow(ndata)), size = smp.size)
+    
+    train <- ndata[train_ind, ]
+    test <- ndata[-train_ind, ]
+    
+    
+    #rf_res <-randomForest(y = train$y  , x= train[, attributes], ytest=test$y, xtest=test[,attributes], ntree=1000, keep.forest = TRUE)
+    rf_res <-randomForest(y = train$y  , x= train[, attributes], ntree=1000, keep.forest = TRUE)
+    
+    
+    
+    #print(rf_res$confusion)
+    
+    
+    
+    #preformance analysis
+    rf_pred = predict(rf_res,test[,attributes],type = "prob")
+    roc<-roc.curve(scores.class0 = rf_pred[,1], scores.class1 = rf_pred[,2], curve= TRUE)
+    pr<-pr.curve(scores.class0 =  rf_pred[,1], scores.class1 = rf_pred[,2], curve= TRUE)
+    
+    roc.auc[num.classifier, trial] = roc$auc
+    pr.auc[num.classifier, trial] = pr$auc.integral
+  }
+  
+}
+
+# 1. Open jpeg file
+filename = paste("classifiers",posfix,".jpg")
+boxplot(t(roc.auc), xlab="clasificador", ylab="auc", col=10*runif(dim(roc.auc)[1]))
+dev.off()
+
+
+
+
+
+# 1. Open jpeg file
+filename = paste("classifiers",posfix,".jpg")
+boxplot(t(pr.auc), xlab="clasificador", ylab="auc", col=10*runif(dim(pr.auc)[1]))
+dev.off()
+
+
+
+minima = rowMins(roc.auc)
+
+maximum = max(minima)
+sel.classifier = which( minima == maximum)
+
+official = unique.selected[sel.classifier,]
+names(official)[official>0]
+
+
+
+# 1. Open jpeg file
+filename = paste("roc-",posfix,".jpg")
+jpeg(filename, width = 700, height = 350)
+roc<-roc.curve(scores.class0 = rf_pred[,1], scores.class1 = rf_pred[,2], curve= TRUE)
+plot(roc)
+dev.off()
+
+filename = paste("pr-",posfix,".jpg")
+jpeg(filename, width = 700, height = 350)
+
+pr<-pr.curve(scores.class0 =  rf_pred[,1], scores.class1 = rf_pred[,2], curve= TRUE)
+plot(pr)
+dev.off()
+
+
+```
+
+
